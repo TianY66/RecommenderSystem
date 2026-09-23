@@ -14,10 +14,28 @@ from .tools import BookTools, ToolValidationError
 
 
 _BOOK_REFERENCE = re.compile(r"\[(I[A-Za-z0-9_-]+)\]")
+_USER_ID = re.compile(r"(?<![A-Za-z0-9])[Uu]\d+(?![A-Za-z0-9])")
+_PERSONALIZATION_HINT = re.compile(
+    r"阅读历史|阅读记录|历史偏好|个性化|按.{0,8}偏好|结合.{0,8}偏好|"
+    r"based on.{0,12}(history|preferences)|reading history|personaliz",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_RATING_HINT = re.compile(
+    r"评分|星级|几星|高于.{0,4}星|star rating|ratings?",
+    re.IGNORECASE,
+)
+_TOOL_BY_STAGE = {
+    "search": "search_catalog",
+    "rank": "rank_candidates_for_user",
+    "details": "get_book_details",
+}
+_KNOWN_TOOL_NAMES = frozenset(_TOOL_BY_STAGE.values())
 
 _INSTRUCTIONS = """你是一个图书检索与推荐助手。回答必须基于本次工具返回的数据。
 工作流程：先用 search_catalog 找候选；若用户提出个性化要求或给出 user_id，必须再用
 rank_candidates_for_user 对这些候选排序；最后用 get_book_details 核验要推荐的图书。
+每轮只能调用当前阶段提供的工具，并按检索、排序、详情的顺序执行。缺少个性化所需的用户 ID，
+或用户要求目录未提供的星级评分时，先澄清，不要调用工具。
 如果排序结果表明没有可用的用户历史或画像，不要声称结果已按该用户偏好个性化。
 只能推荐详情工具返回的图书，只能陈述详情中存在的字段。目录没有星级评分，不能声称书籍有评分。
 若没有候选、用户身份不明或约束无法满足，要明确说明并在必要时询问澄清。不要编造图书、属性或推荐依据。
@@ -64,6 +82,13 @@ class BookAgent:
             return self._result(False, "请输入要查找或推荐的图书需求。", "empty_user_message", trace, started)
 
         session = self.tools.new_session()
+        tool_definitions = {
+            definition["name"]: definition for definition in self.tools.tool_definitions()
+        }
+        personalization_requested = self._personalization_requested(user_message)
+        workflow_stage = self._initial_stage(user_message, personalization_requested)
+        trace["personalization_requested"] = personalization_requested
+        trace["workflow_stages"] = []
         input_items: list[dict[str, Any]] = [
             {"role": "user", "content": user_message.strip()}
         ]
@@ -71,10 +96,13 @@ class BookAgent:
         tool_rounds = 0
 
         while True:
+            trace["workflow_stages"].append(workflow_stage or "complete")
+            available_tool = _TOOL_BY_STAGE.get(workflow_stage or "")
+            available_tools = [tool_definitions[available_tool]] if available_tool else []
             try:
                 turn = self.provider.create_response(
                     input_items=input_items,
-                    tools=self.tools.tool_definitions(),
+                    tools=available_tools,
                     previous_response_id=previous_response_id,
                     instructions=_INSTRUCTIONS,
                 )
@@ -100,10 +128,27 @@ class BookAgent:
                         started,
                     )
                 tool_rounds += 1
-                input_items = [
-                    self._execute_tool_call(call, session, trace)
-                    for call in turn.tool_calls
-                ]
+                input_items = []
+                first_record_index = len(trace["tool_calls"])
+                for index, call in enumerate(turn.tool_calls):
+                    allowed_names = {available_tool} if available_tool and index == 0 else set()
+                    forced_error = "parallel_tool_call_not_supported" if index else None
+                    input_items.append(
+                        self._execute_tool_call(
+                            call,
+                            session,
+                            trace,
+                            allowed_tool_names=allowed_names,
+                            forced_error=forced_error,
+                        )
+                    )
+                first_record = trace["tool_calls"][first_record_index]
+                if first_record["error"] is None:
+                    workflow_stage = self._next_stage(
+                        workflow_stage,
+                        first_record["result_item_ids"],
+                        personalization_requested,
+                    )
                 continue
 
             answer = (turn.output_text or "").strip()
@@ -167,6 +212,9 @@ class BookAgent:
         call: ToolCall,
         session: Any,
         trace: dict[str, Any],
+        *,
+        allowed_tool_names: set[str],
+        forced_error: str | None = None,
     ) -> dict[str, Any]:
         record: dict[str, Any] = {
             "call_id": call.call_id,
@@ -175,55 +223,70 @@ class BookAgent:
             "result_item_ids": [],
             "error": None,
         }
-        try:
-            arguments = json.loads(call.arguments)
-            record["arguments"] = arguments
-        except (json.JSONDecodeError, TypeError):
-            result: dict[str, Any] = {
-                "error": "invalid_json_arguments",
-                "message": "工具参数不是有效 JSON。",
+        if forced_error:
+            result = {
+                "error": forced_error,
+                "message": "每轮只处理一个工具调用，请基于当前阶段重试。",
             }
-            record["error"] = "invalid_json_arguments"
+            record["error"] = forced_error
+        elif call.name not in _KNOWN_TOOL_NAMES:
+            result = {"error": "unknown_tool", "message": f"Unknown tool: {call.name}"}
+            record["error"] = "unknown_tool"
+        elif call.name not in allowed_tool_names:
+            result = {
+                "error": "tool_not_available_in_stage",
+                "message": "该工具不属于当前工作流阶段。请使用本轮提供的工具。",
+            }
+            record["error"] = "tool_not_available_in_stage"
         else:
             try:
-                result = session.call(call.name, arguments)
-                if call.name == "get_book_details":
-                    detail_ids = [
-                        row["item_id"]
-                        for row in result.get("items", [])
-                        if isinstance(row, dict) and row.get("item_id") is not None
-                    ]
-                    trace["detail_item_ids"] = list(
-                        dict.fromkeys(trace["detail_item_ids"] + detail_ids)
-                    )
-                    trace["detail_evidence"].update(
-                        {
-                            row["item_id"]: row
+                arguments = json.loads(call.arguments)
+                record["arguments"] = arguments
+            except (json.JSONDecodeError, TypeError):
+                result = {
+                    "error": "invalid_json_arguments",
+                    "message": "工具参数不是有效 JSON。",
+                }
+                record["error"] = "invalid_json_arguments"
+            else:
+                try:
+                    result = session.call(call.name, arguments)
+                    if call.name == "get_book_details":
+                        detail_ids = [
+                            row["item_id"]
                             for row in result.get("items", [])
                             if isinstance(row, dict) and row.get("item_id") is not None
-                        }
-                    )
-                    record["result_item_ids"] = detail_ids
-                elif call.name == "search_catalog":
-                    record["result_item_ids"] = [
-                        row["item_id"] for row in result.get("candidates", [])
-                    ]
-                elif call.name == "rank_candidates_for_user":
-                    record["result_item_ids"] = [
-                        row["item_id"] for row in result.get("ranked_candidates", [])
-                    ]
-                    record["user_context"] = result.get("user_context", {})
-            except ToolValidationError as exc:
-                code = "unknown_tool" if str(exc).startswith("Unknown tool:") else "tool_validation_error"
-                result = {"error": code, "message": str(exc)}
-                record["error"] = code
-            except Exception as exc:
-                result = {
-                    "error": "tool_execution_error",
-                    "message": "工具执行失败。",
-                }
-                record["error"] = "tool_execution_error"
-                record["exception_type"] = type(exc).__name__
+                        ]
+                        trace["detail_item_ids"] = list(
+                            dict.fromkeys(trace["detail_item_ids"] + detail_ids)
+                        )
+                        trace["detail_evidence"].update(
+                            {
+                                row["item_id"]: row
+                                for row in result.get("items", [])
+                                if isinstance(row, dict) and row.get("item_id") is not None
+                            }
+                        )
+                        record["result_item_ids"] = detail_ids
+                    elif call.name == "search_catalog":
+                        record["result_item_ids"] = [
+                            row["item_id"] for row in result.get("candidates", [])
+                        ]
+                    elif call.name == "rank_candidates_for_user":
+                        record["result_item_ids"] = [
+                            row["item_id"] for row in result.get("ranked_candidates", [])
+                        ]
+                        record["user_context"] = result.get("user_context", {})
+                except ToolValidationError as exc:
+                    record["error"] = "tool_validation_error"
+                    result = {"error": "tool_validation_error", "message": str(exc)}
+                except Exception as exc:
+                    result = {
+                        "error": "tool_execution_error",
+                        "message": "工具执行失败。",
+                    }
+                    record["error"] = "tool_execution_error"
+                    record["exception_type"] = type(exc).__name__
 
         trace["tool_calls"].append(record)
         return {
@@ -231,6 +294,32 @@ class BookAgent:
             "call_id": call.call_id,
             "output": json.dumps(result, ensure_ascii=False, separators=(",", ":")),
         }
+
+    @staticmethod
+    def _personalization_requested(user_message: str) -> bool:
+        return bool(_USER_ID.search(user_message) or _PERSONALIZATION_HINT.search(user_message))
+
+    @classmethod
+    def _initial_stage(cls, user_message: str, personalization_requested: bool) -> str:
+        if _UNSUPPORTED_RATING_HINT.search(user_message):
+            return "clarify"
+        if personalization_requested and not _USER_ID.search(user_message):
+            return "clarify"
+        return "search"
+
+    @staticmethod
+    def _next_stage(
+        current_stage: str | None,
+        result_item_ids: list[str],
+        personalization_requested: bool,
+    ) -> str | None:
+        if not result_item_ids:
+            return None
+        if current_stage == "search":
+            return "rank" if personalization_requested else "details"
+        if current_stage == "rank":
+            return "details"
+        return None
 
     def _result(
         self,

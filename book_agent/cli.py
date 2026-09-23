@@ -91,7 +91,7 @@ def create_parser() -> argparse.ArgumentParser:
     agent_eval = commands.add_parser(
         "evaluate-agent", help="Run the JSONL cases against a real Responses API model"
     )
-    agent_eval.add_argument("--provider", choices=("openai",), default="openai")
+    agent_eval.add_argument("--provider", choices=("openai", "deepseek"), default="openai")
     agent_eval.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     agent_eval.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     agent_eval.add_argument(
@@ -171,7 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "evaluate-agent":
         try:
-            provider = OpenAIResponsesProvider.from_env()
+            provider = OpenAIResponsesProvider.from_env(provider=args.provider)
         except (ValueError, RuntimeError) as exc:
             parser.error(str(exc))
         data = load_demo_data(args.data_dir)

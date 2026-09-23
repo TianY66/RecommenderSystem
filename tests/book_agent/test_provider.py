@@ -15,6 +15,8 @@ class FakeResponsesEndpoint:
         self.requests.append(kwargs)
         if self.error:
             raise self.error
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -105,3 +107,121 @@ def test_responses_provider_preserves_api_errors_for_agent_error_handling():
         provider.create_response(
             input_items=[], tools=[], previous_response_id=None, instructions=""
         )
+
+
+def test_stateless_responses_provider_resends_full_tool_call_history():
+    first = SimpleNamespace(
+        id="deepseek-r1",
+        status="completed",
+        output_text="",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                content=[SimpleNamespace(type="reasoning_text", text="find candidates")],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                call_id="call-search",
+                name="search_catalog",
+                arguments='{"query":"算法"}',
+            ),
+        ],
+        usage=None,
+    )
+    second = SimpleNamespace(
+        id="deepseek-r2",
+        status="completed",
+        output_text="已检索。",
+        output=[],
+        usage=None,
+    )
+    client, endpoint = fake_client([first, second])
+    provider = OpenAIResponsesProvider(client, model_name="deepseek-flash", stateless=True)
+    user_input = [{"role": "user", "content": "搜索算法书"}]
+    tools = [{"type": "function", "name": "search_catalog", "strict": True}]
+
+    first_turn = provider.create_response(
+        input_items=user_input,
+        tools=tools,
+        previous_response_id=None,
+        instructions="instructions",
+    )
+    provider.create_response(
+        input_items=[
+            {
+                "type": "function_call_output",
+                "call_id": first_turn.tool_calls[0].call_id,
+                "output": '{"candidates":[]}',
+            }
+        ],
+        tools=tools,
+        previous_response_id=first_turn.response_id,
+        instructions="instructions",
+    )
+
+    replayed_input = endpoint.requests[1]["input"]
+    assert [item.get("type", "message") for item in replayed_input] == [
+        "message",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+    ]
+    assert replayed_input[1]["content"][0]["text"] == "find candidates"
+    assert "previous_response_id" not in endpoint.requests[1]
+    assert "parallel_tool_calls" not in endpoint.requests[0]
+    assert endpoint.requests[0]["tools"] == [
+        {"type": "function", "name": "search_catalog"}
+    ]
+
+
+def test_stateless_provider_rejects_tool_calls_without_response_id():
+    client, _ = fake_client(
+        SimpleNamespace(
+            id=None,
+            status="completed",
+            output_text="",
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call-search",
+                    name="search_catalog",
+                    arguments='{"query":"算法"}',
+                )
+            ],
+            usage=None,
+        )
+    )
+    provider = OpenAIResponsesProvider(client, model_name="deepseek-flash", stateless=True)
+
+    with pytest.raises(ValueError, match="without a response ID"):
+        provider.create_response(
+            input_items=[{"role": "user", "content": "搜索算法书"}],
+            tools=[{"type": "function", "name": "search_catalog"}],
+            previous_response_id=None,
+            instructions="Use tools.",
+        )
+
+
+def test_deepseek_provider_reads_its_own_environment_names_and_stateless_mode():
+    client, _ = fake_client()
+    client_options = {}
+
+    def client_factory(**kwargs):
+        client_options.update(kwargs)
+        return client
+
+    provider = OpenAIResponsesProvider.from_env(
+        {
+            "DEEPSEEK_API_KEY": "not-a-real-secret",
+            "DEEPSEEK_MODEL": "deepseek-flash",
+        },
+        provider="deepseek",
+        client_factory=client_factory,
+    )
+
+    assert provider.model_name == "deepseek-flash"
+    assert provider.stateless is True
+    assert client_options == {
+        "api_key": "not-a-real-secret",
+        "base_url": "https://api.deepseek.com",
+    }

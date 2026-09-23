@@ -126,6 +126,16 @@ def test_agent_runs_retrieval_personalization_details_and_grounded_answer():
         "rank_candidates_for_user",
         "get_book_details",
     ]
+    assert result.trace["detail_item_ids"] == ["I2"]
+    assert provider.requests[1]["previous_response_id"] == "response-search"
+    assert provider.requests[1]["input_items"][0]["type"] == "function_call_output"
+    assert provider.requests[1]["input_items"][0]["call_id"] == "call-search"
+    assert [[tool["name"] for tool in request["tools"]] for request in provider.requests] == [
+        ["search_catalog"],
+        ["rank_candidates_for_user"],
+        ["get_book_details"],
+        [],
+    ]
 
 
 def test_agent_starts_without_tools_when_personalization_needs_user_identity():
@@ -168,15 +178,46 @@ def test_agent_rejects_tools_that_are_not_available_at_current_stage():
     assert json.loads(provider.requests[1]["input_items"][0]["output"])["error"] == (
         "tool_not_available_in_stage"
     )
-    assert result.trace["detail_item_ids"] == ["I2"]
-    assert provider.requests[1]["previous_response_id"] == "response-search"
-    assert provider.requests[1]["input_items"][0]["type"] == "function_call_output"
-    assert provider.requests[1]["input_items"][0]["call_id"] == "call-search"
-    assert [[tool["name"] for tool in request["tools"]] for request in provider.requests] == [
-        ["search_catalog"],
-        ["rank_candidates_for_user"],
-        ["get_book_details"],
-        [],
+
+
+def test_agent_returns_outputs_for_parallel_calls_but_executes_only_first():
+    search_call = call(
+        "call-search-first",
+        "search_catalog",
+        {
+            "query": "算法",
+            "category": None,
+            "keyword": None,
+            "min_price": None,
+            "max_price": None,
+            "limit": 5,
+        },
+    )
+    rank_call = call(
+        "call-rank-extra",
+        "rank_candidates_for_user",
+        {"user_id": "U1", "query": "算法", "candidate_item_ids": ["I1"], "limit": 5},
+    )
+    agent, provider = make_agent(
+        [
+            ProviderTurn(
+                response_id="response-parallel",
+                tool_calls=(search_call, rank_call),
+            ),
+            ProviderTurn(response_id="response-final", output_text="检索已完成。"),
+        ]
+    )
+
+    result = agent.run("搜索算法书。")
+
+    assert result.success is True
+    assert [entry["error"] for entry in result.trace["tool_calls"]] == [
+        None,
+        "parallel_tool_call_not_supported",
+    ]
+    assert [item["call_id"] for item in provider.requests[1]["input_items"]] == [
+        "call-search-first",
+        "call-rank-extra",
     ]
 
 

@@ -11,7 +11,9 @@ python -m pip install -r requirements-agent.txt
 Copy-Item .env.example .env
 ```
 
-真实模型评测需要在本机 `.env` 中设置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。`OPENAI_BASE_URL` 可选。请勿把 `.env` 提交到 Git，也不要把 API key 粘贴到聊天或评测报告中。命令会读取本机环境变量或仓库根目录 `.env`；报告只记录模型名、token 用量、耗时、工具参数和工具结果。
+真实模型评测可使用 DeepSeek 或 OpenAI Responses API。使用 DeepSeek 时，在本机 `.env` 配置 `DEEPSEEK_API_KEY`，并可设置 `DEEPSEEK_MODEL=deepseek-flash`、`DEEPSEEK_BASE_URL=https://api.deepseek.com`；使用 OpenAI 时配置 `OPENAI_API_KEY` 与 `OPENAI_MODEL`。请勿把 `.env` 提交到 Git，也不要把 API key 粘贴到聊天或评测报告中。命令会读取本机环境变量或仓库根目录 `.env`；报告只记录模型名、token 用量、耗时、工具参数和工具结果。
+
+DeepSeek 的 Responses API 不保留跨请求状态，因此适配器会在每次调用时重放本轮对话和工具结果。DeepSeek 目前会忽略 `parallel_tool_calls` 设置；Agent 通过每轮只开放当前阶段的一个工具，并拒绝额外并行调用，保证调用顺序可核验。
 
 ## 本地检索与排序演示
 
@@ -50,7 +52,7 @@ python -m book_agent.cli evaluate-recommender --ks 5 10 20
 
 ```powershell
 python -m book_agent.cli evaluate-agent `
-  --provider openai `
+  --provider deepseek `
   --cases data/agent_eval_cases.jsonl `
   --output reports/agent_eval_initial.json
 ```
@@ -70,7 +72,7 @@ python -m book_agent.cli evaluate-agent `
 
 ```powershell
 python -m book_agent.cli evaluate-agent `
-  --provider openai `
+  --provider deepseek `
   --cases data/agent_eval_cases.jsonl `
   --output reports/agent_eval_refined.json
 ```
