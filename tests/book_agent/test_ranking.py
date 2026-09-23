@@ -83,3 +83,13 @@ def test_popularity_and_itemcf_baselines_filter_seen_items():
     assert "I1" not in engine.recommend_popularity("U1", limit=3)
     assert engine.recommend_itemcf("U1", limit=2)[0] == "I2"
     assert "I1" not in engine.recommend_itemcf("U1", limit=3)
+
+
+def test_popularity_order_is_cached_after_fit():
+    engine = make_engine()
+
+    first = engine._popularity_order()
+    second = engine._popularity_order()
+
+    assert first is second
+    assert first == ("I1", "I2", "I3")

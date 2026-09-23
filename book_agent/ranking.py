@@ -41,8 +41,10 @@ class RecommendationEngine:
         self.user_history: dict[str, dict[str, float]] = {}
         self.popularity: Counter[str] = Counter()
         self.item_neighbors: dict[str, dict[str, float]] = {}
+        self._popularity_order_cache: tuple[str, ...] | None = None
 
     def fit(self, interactions: pd.DataFrame) -> "RecommendationEngine":
+        self._popularity_order_cache = None
         required = {"user_id", "item_id"}
         missing = required - set(interactions.columns)
         if missing:
@@ -87,13 +89,19 @@ class RecommendationEngine:
                     scored.append((neighbor_id, dot / denominator))
             scored.sort(key=lambda pair: (-pair[1], pair[0]))
             self.item_neighbors[item_id] = dict(scored[: self.max_neighbors])
+        self._popularity_order_cache = self._build_popularity_order()
         return self
 
-    def _popularity_order(self) -> list[str]:
+    def _build_popularity_order(self) -> tuple[str, ...]:
         scored = sorted(self.popularity.items(), key=lambda pair: (-pair[1], pair[0]))
         observed = [item_id for item_id, _ in scored]
         missing = [item_id for item_id in self.catalog.item_ids if item_id not in self.popularity]
-        return observed + missing
+        return tuple(observed + missing)
+
+    def _popularity_order(self) -> tuple[str, ...]:
+        if self._popularity_order_cache is None:
+            self._popularity_order_cache = self._build_popularity_order()
+        return self._popularity_order_cache
 
     def recommend_popularity(self, user_id: str | None, *, limit: int = 20) -> list[str]:
         if limit <= 0:

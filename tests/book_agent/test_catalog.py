@@ -53,6 +53,10 @@ def test_empty_query_is_stable_and_limit_is_validated(catalog):
         catalog.search("Python", limit=0)
 
 
+def test_nonempty_query_with_no_text_match_returns_no_candidates(catalog):
+    assert catalog.search("星际鲸鱼XYZ") == []
+
+
 def test_search_rejects_invalid_price_ranges(catalog):
     with pytest.raises(ValueError, match="max_price"):
         catalog.search("Python", min_price=100, max_price=20)

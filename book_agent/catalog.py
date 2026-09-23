@@ -125,6 +125,8 @@ class BookCatalog:
             candidates.append(item_id)
 
         scores = self.query_scores(query, candidates)
+        if query and query.strip():
+            candidates = [item_id for item_id in candidates if scores[item_id] > 0]
         ordered = sorted(candidates, key=lambda item_id: (-scores[item_id], item_id))
         return [
             {"item_id": item_id, "retrieval_score": scores[item_id]}
