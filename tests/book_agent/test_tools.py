@@ -65,6 +65,30 @@ def test_tool_definitions_are_strict_and_allow_only_three_read_tools(tools):
     )
     assert "科技" in category_description
     assert "主题" in category_description
+    keyword_description = next(
+        definition["parameters"]["properties"]["keyword"]["description"]
+        for definition in definitions
+        if definition["name"] == "search_catalog"
+    )
+    assert "算法" in keyword_description
+    assert "精确" in keyword_description
+
+
+def test_search_normalizes_a_phrase_to_its_unique_catalog_keyword(tools):
+    result = tools.new_session().call(
+        "search_catalog",
+        {
+            "query": "算法基础",
+            "category": "科技",
+            "keyword": "算法基础",
+            "min_price": None,
+            "max_price": None,
+            "limit": 5,
+        },
+    )
+
+    assert [row["item_id"] for row in result["candidates"]] == ["I1", "I2"]
+    assert result["applied_filters"]["keyword"] == "算法"
 
 
 def test_search_treats_string_null_as_an_unset_optional_filter(tools):

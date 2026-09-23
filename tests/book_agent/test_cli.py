@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from book_agent.cli import evaluate_recommenders, main
+from book_agent.cli import _print_agent_result, evaluate_recommenders, main
 from book_agent.data import DemoData
 
 
@@ -40,6 +40,7 @@ def test_recommender_evaluation_fits_only_temporal_training_data():
 def test_real_agent_cli_reports_missing_credentials_without_stack_trace(monkeypatch, capsys):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setattr("book_agent.cli._load_environment_file", lambda: None)
 
     with pytest.raises(SystemExit) as exit_info:
         main(["evaluate-agent"])
@@ -52,6 +53,7 @@ def test_real_agent_cli_reports_missing_credentials_without_stack_trace(monkeypa
 
 def test_real_agent_cli_selects_deepseek_and_reports_missing_key(monkeypatch, capsys):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("book_agent.cli._load_environment_file", lambda: None)
 
     with pytest.raises(SystemExit) as exit_info:
         main(["evaluate-agent", "--provider", "deepseek"])
@@ -60,3 +62,21 @@ def test_real_agent_cli_selects_deepseek_and_reports_missing_key(monkeypatch, ca
     assert exit_info.value.code == 2
     assert "DEEPSEEK_API_KEY" in output.err
     assert "Traceback" not in output.err
+
+
+def test_ask_cli_reports_the_specific_answer_fallback_reason(capsys):
+    class Result:
+        success = True
+        answer = "根据已核验字段推荐《算法实践》[I2]。"
+        error = None
+        trace = {
+            "tool_calls": [],
+            "answer_fallback_used": True,
+            "answer_fallback_reason": "unsupported_answer_facts",
+            "duration_ms": 1.0,
+        }
+
+    _print_agent_result(Result())
+
+    output = capsys.readouterr().out
+    assert "回答保护：模型回答包含目录无法证实的内容，已改用核验字段" in output

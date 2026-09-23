@@ -83,6 +83,10 @@
 最后一步需要单独安装GPU版本的Pytorch，运行：
 >pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ## 🚀 Usage
+建议先阅读更完整的中文运行手册：[RUNNING.md](RUNNING.md)。该手册区分了本地 CSV 演示与 FastAPI + MySQL 服务，并列出了当前版本的已知启动阻塞和排错方法。
+
+图书检索与推荐 Agent 的实现及评测说明见 [AGENT_DEMO.md](AGENT_DEMO.md)。
+
 在使用/interface中的外部接口之前，你需要先做以下准备：  
 >将main.py中的uvicorn.run函数参数修改为你自己的IP地址和端口号
 

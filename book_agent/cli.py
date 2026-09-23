@@ -97,6 +97,13 @@ def create_parser() -> argparse.ArgumentParser:
     agent_eval.add_argument(
         "--output", type=Path, default=DEFAULT_REPORTS_DIR / "agent_eval.json"
     )
+
+    ask = commands.add_parser(
+        "ask", help="Interactively ask the book agent a question using a real model"
+    )
+    ask.add_argument("--provider", choices=("openai", "deepseek"), default="deepseek")
+    ask.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    ask.add_argument("--query", help="Ask one question and exit; omit to start an interactive session")
     return parser
 
 
@@ -192,6 +199,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "ask":
+        try:
+            provider = OpenAIResponsesProvider.from_env(provider=args.provider)
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        data = load_demo_data(args.data_dir)
+        catalog, _, tools = _components(data)
+        agent = BookAgent(tools, provider, model_name=provider.model_name)
+        return _run_ask(agent, args.query)
+
     parser.error("unknown command")
     return 2
 
@@ -200,6 +217,88 @@ def _write_json(path: str | Path, payload: dict) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _run_ask(agent: BookAgent, query: str | None) -> int:
+    if query is not None:
+        question = query.strip()
+        if not question:
+            print("问题不能为空。")
+            return 2
+        result = agent.run(question)
+        _print_agent_result(result)
+        return 0 if result.success else 1
+
+    print("图书推荐 Agent 已就绪。每条问题独立处理；输入 q、exit 或 退出结束。")
+    while True:
+        try:
+            question = input("\n你：").strip()
+        except EOFError:
+            print("\n会话结束。")
+            return 0
+        except KeyboardInterrupt:
+            print("\n会话结束。")
+            return 0
+
+        if question.casefold() in {"q", "quit", "exit", "退出"}:
+            print("会话结束。")
+            return 0
+        if not question:
+            continue
+
+        result = agent.run(question)
+        _print_agent_result(result)
+
+
+def _print_agent_result(result: Any) -> None:
+    print(f"\nAgent：{result.answer}")
+    if result.error:
+        print(f"状态：未完成（{result.error}）")
+    else:
+        print("状态：完成")
+
+    labels = {
+        "search_catalog": "目录检索",
+        "rank_candidates_for_user": "偏好排序",
+        "get_book_details": "详情核验",
+    }
+    stages = []
+    for call in result.trace.get("tool_calls", []):
+        label = labels.get(call.get("name"), call.get("name", "未知工具"))
+        if call.get("error"):
+            stages.append(f"{label}失败")
+        else:
+            count = len(call.get("result_item_ids", []))
+            stages.append(f"{label}（{count} 本）")
+    print("工具轨迹：" + (" → ".join(stages) if stages else "无需调用工具"))
+
+    rank_calls = [
+        call for call in result.trace.get("tool_calls", [])
+        if call.get("name") == "rank_candidates_for_user"
+    ]
+    if rank_calls:
+        context = rank_calls[-1].get("user_context", {})
+        if context.get("personalization_applied"):
+            print("个性化：候选命中了用户历史或画像信号。")
+        elif context.get("known_user"):
+            print("个性化：该用户有历史或画像，但当前候选没有匹配信号。")
+        else:
+            print("个性化：没有可用的用户历史或画像，按检索相关度排序。")
+
+    if result.trace.get("answer_fallback_used"):
+        fallback_labels = {
+            "no_candidates": "筛选后没有候选，已说明无结果",
+            "unsupported_answer_facts": "模型回答包含目录无法证实的内容，已改用核验字段",
+            "unverified_item_id": "模型引用了未核验书目，已改用核验字段",
+            "title_mismatch": "模型书名与书目编号不匹配，已改用核验字段",
+            "missing_citation": "模型回答缺少书目引用，已补为核验候选",
+            "recommendation_count_mismatch": "模型返回数量不符，已按要求调整",
+        }
+        reason = result.trace.get("answer_fallback_reason")
+        print("回答保护：" + fallback_labels.get(reason, "采用了基于已核验目录详情的安全回答"))
+    duration_ms = result.trace.get("duration_ms")
+    if duration_ms is not None:
+        print(f"耗时：{duration_ms:.0f} ms")
 
 
 if __name__ == "__main__":

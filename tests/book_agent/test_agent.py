@@ -245,6 +245,31 @@ def test_agent_replaces_a_mismatched_title_with_a_grounded_fallback():
     assert "伪造书名" not in result.answer
 
 
+def test_agent_explains_grounded_fallback_reasons_from_verified_fields():
+    agent, _ = make_agent(valid_flow_turns("推荐《生活随笔》[I3]。"))
+
+    result = agent.run("结合 U1 的阅读历史，推荐一本科技类算法书，50 元以内，并说明理由。")
+
+    assert result.success is True
+    assert result.trace["answer_fallback_used"] is True
+    assert "推荐依据" in result.answer
+    assert "目录类别「科技」符合筛选条件" in result.answer
+    assert "目录关键词「算法」匹配主题" in result.answer
+    assert "价格 45 元，不超过 50 元预算上限" in result.answer
+
+
+def test_agent_clarifies_age_request_when_catalog_has_no_audience_metadata():
+    agent, provider = make_agent([])
+
+    result = agent.run("我要找一本幼儿读物，价格不超过 50 元。")
+
+    assert result.success is True
+    assert result.trace["clarification_reason"] == "audience_metadata_unavailable"
+    assert "无法核实图书是否适合该年龄段" in result.answer
+    assert provider.requests == []
+    assert result.trace["tool_calls"] == []
+
+
 def test_agent_returns_a_local_no_results_answer_without_an_extra_model_turn():
     agent, provider = make_agent(
         [

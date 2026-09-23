@@ -12,6 +12,7 @@ from typing import Any
 
 from .agent import AgentResult
 from .catalog import BookCatalog
+from .evidence import answer_facts_supported
 
 _ITEM_REFERENCE = re.compile(r"\[(I[A-Za-z0-9_-]+)\]")
 _CLARIFICATION = re.compile(r"请.*(?:提供|告诉|补充|确认)|请问|需要.*(?:用户|编号)|\?|？")
@@ -131,6 +132,7 @@ def score_case(
         "end_to_end_success": end_to_end,
         "cited_item_ids": cited_ids,
         "detail_item_ids": detail_ids,
+        "answer_fallback_used": bool(trace.get("answer_fallback_used", False)),
         "answer": result.answer,
         "error": result.error,
         "trace": trace,
@@ -157,6 +159,7 @@ def summarize_results(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "fact_consistency_rate": rate("facts_consistent"),
         "personalization_claim_accuracy": rate("personalization_claim_accurate"),
         "failure_handling_rate": rate("failure_handled", applicable_only=True),
+        "answer_fallback_rate": rate("answer_fallback_used"),
         "trace_completeness_rate": rate("trace_complete"),
         "end_to_end_success_rate": rate("end_to_end_success"),
     }
@@ -252,12 +255,19 @@ def _personalization_claim_is_accurate(
     context = rank_calls[-1].get("user_context", {})
     if context.get("personalization_applied") is not False:
         return False
-    unsupported_claim = re.search(
+    claim_pattern = re.compile(
         r"(?:根据|根據).{0,8}(?:阅读|閱讀|浏览|瀏覽|购买|購買).{0,6}(?:历史|歷史|记录|記錄)"
         r"|(?:结合|結合).{0,8}(?:历史|歷史)|(?:个性化|個性化)推荐",
-        answer,
     )
-    return unsupported_claim is None
+    for claim in claim_pattern.finditer(answer):
+        clause = re.split(r"[，,。；;\n]", answer[: claim.start()])[-1]
+        if re.search(
+            r"(?:不是|并非|并没有|没有|無|无|未|并未|不能|无法|不)(?:.{0,4})$",
+            clause,
+        ):
+            continue
+        return False
+    return True
 
 
 def _stated_facts_are_supported(
@@ -265,46 +275,12 @@ def _stated_facts_are_supported(
     cited_ids: list[str],
     catalog: BookCatalog,
 ) -> bool:
-    if not cited_ids:
-        return True
-    cited_items = [catalog.get_item(item_id) for item_id in cited_ids]
-    if any(item is None for item in cited_items):
-        return False
-
-    known_tags: set[str] = set()
-    known_prices: set[float] = set()
-    for item in cited_items:
-        known_tags.update(_tag_set(item.get("item_categories")))
-        known_tags.update(_tag_set(item.get("item_keywords")))
-        price = _number(item.get("price"))
-        if price is not None:
-            known_prices.add(price)
-
-    category_claims = re.findall(
-        r"(?:属于|类别(?:是|为)?|分类(?:是|为)?)\s*([^，,。；;\s]+)", answer
-    )
-    for claim in category_claims:
-        normalized = claim.strip().removesuffix("类").casefold()
-        if normalized and normalized not in known_tags:
-            return False
-
-    keyword_claims = re.findall(
-        r"(?:关键词|关键字|标签)(?:包括|包含|有|是|为|：|:)?\s*([^，,。；;\n]+)", answer
-    )
-    for claim in keyword_claims:
-        terms = re.split(r"[、和与及/]+", claim.strip())
-        if any(term.strip().casefold() not in known_tags for term in terms if term.strip()):
-            return False
-
-    price_claims = re.findall(
-        r"(?:价格|售价|定价)(?:为|是|约)?\s*[￥¥]?\s*(\d+(?:\.\d+)?)\s*元",
-        answer,
-    )
-    for claim in price_claims:
-        claimed_price = float(claim)
-        if not any(abs(claimed_price - actual) < 1e-6 for actual in known_prices):
-            return False
-    return True
+    verified_items = {
+        item_id: item
+        for item_id in cited_ids
+        if (item := catalog.get_item(item_id)) is not None
+    }
+    return answer_facts_supported(answer, cited_ids, verified_items)
 
 
 def _tag_set(value: Any) -> set[str]:

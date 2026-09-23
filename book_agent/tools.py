@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .catalog import BookCatalog
+from .evidence import field_values
 from .ranking import RecommendationEngine
 
 
@@ -85,7 +86,10 @@ def _optional_text(value: Any, name: str) -> str | None:
         return None
     if not isinstance(value, str) or len(value) > 256:
         raise ToolValidationError(f"{name} must be a string of at most 256 characters or null")
-    return value.strip() or None
+    text = value.strip()
+    if text.casefold() in {"", "null", "none"}:
+        return None
+    return text
 
 
 class BookTools:
@@ -94,6 +98,45 @@ class BookTools:
         self.recommender = recommender
 
     def tool_definitions(self) -> list[dict[str, Any]]:
+        categories = sorted(
+            {
+                category
+                for item in self.catalog.items.values()
+                for category in field_values(item.get("item_categories"))
+            }
+        )
+        keywords = sorted(
+            {
+                keyword
+                for item in self.catalog.items.values()
+                for keyword in field_values(item.get("item_keywords"))
+            }
+        )
+        category_options = "、".join(categories)
+        keyword_options = "、".join(keywords)
+        search_schema = {
+            **_SEARCH_SCHEMA,
+            "properties": {
+                **_SEARCH_SCHEMA["properties"],
+                "category": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "仅填写目录中的精确图书类别；可选类别："
+                        f"{category_options}。主题、体裁和用途（如漫画、科普、推理）"
+                        "应放入 keyword，不要放入 category。用户未指定类别时填 null；"
+                        "用户明确指定目录中不存在的类别时仍保留该类别，以遵守筛选条件。"
+                    ),
+                },
+                "keyword": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "用户明确要求的目录关键词或主题标签；目录现有标签："
+                        f"{keyword_options}。只填写精确标签，不要把类别复制到此字段。"
+                        "若用户表述包含唯一的目录标签，填写该精确标签。未指定时填 null。"
+                    ),
+                },
+            },
+        }
         return [
             {
                 "type": "function",
@@ -103,7 +146,7 @@ class BookTools:
                     "Returns only item IDs and retrieval scores; use the returned IDs "
                     "for personalization and detail verification."
                 ),
-                "parameters": _SEARCH_SCHEMA,
+                "parameters": search_schema,
                 "strict": True,
             },
             {
@@ -160,6 +203,13 @@ class BookToolSession:
             raise ToolValidationError("query must be a string of at most 2000 characters")
         category = _optional_text(values["category"], "category")
         keyword = _optional_text(values["keyword"], "keyword")
+        if keyword:
+            known_keywords = {
+                label
+                for item in self.tools.catalog.items.values()
+                for label in field_values(item.get("item_keywords"))
+            }
+            keyword = _canonical_filter_label(keyword, known_keywords)
         min_price = self._optional_price(values["min_price"], "min_price")
         max_price = self._optional_price(values["max_price"], "max_price")
         limit = _bounded_int(values["limit"], "limit", 1, 50)
@@ -173,7 +223,17 @@ class BookToolSession:
         )
         self.search_candidate_ids = {row["item_id"] for row in candidates}
         self.detail_allowed_ids = set(self.search_candidate_ids)
-        return {"candidates": candidates, "count": len(candidates)}
+        return {
+            "candidates": candidates,
+            "count": len(candidates),
+            "applied_filters": {
+                "query": query.strip(),
+                "category": category,
+                "keyword": keyword,
+                "min_price": min_price,
+                "max_price": max_price,
+            },
+        }
 
     def _rank(self, arguments: Any) -> dict[str, Any]:
         values = _exact_arguments(
@@ -211,8 +271,9 @@ class BookToolSession:
                 "known_user": profile_available or history_count > 0,
                 "profile_available": profile_available,
                 "history_item_count": history_count,
-                "personalization_applied": bool(
-                    history_count or profile_categories or profile_keywords
+                "personalization_applied": any(
+                    row.get("history_score", 0) > 0 or row.get("profile_score", 0) > 0
+                    for row in ranked
                 ),
             },
         }
@@ -263,3 +324,15 @@ class BookToolSession:
         if not math.isfinite(price) or price < 0:
             raise ToolValidationError(f"{name} must be a non-negative finite number or null")
         return price
+
+
+def _canonical_filter_label(value: str, canonical_values: set[str]) -> str:
+    """Resolve a phrase containing one unique longest exact catalog label."""
+
+    folded = value.casefold()
+    matches = [label for label in canonical_values if label.casefold() in folded]
+    if not matches:
+        return value
+    longest_length = max(len(label) for label in matches)
+    longest = [label for label in matches if len(label) == longest_length]
+    return longest[0] if len(longest) == 1 else value

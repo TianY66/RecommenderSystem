@@ -170,6 +170,12 @@ class OpenAIResponsesProvider:
             status=_read(response, "status"),
         )
 
+    def discard_response(self, response_id: str | None) -> None:
+        """Forget client-side history kept for an abandoned stateless response."""
+
+        if response_id:
+            self._histories.pop(response_id, None)
+
 
 def _read(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
