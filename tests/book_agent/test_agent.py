@@ -126,6 +126,48 @@ def test_agent_runs_retrieval_personalization_details_and_grounded_answer():
         "rank_candidates_for_user",
         "get_book_details",
     ]
+
+
+def test_agent_starts_without_tools_when_personalization_needs_user_identity():
+    agent, provider = make_agent(
+        [ProviderTurn(response_id="response-final", output_text="请提供用户 ID。")]
+    )
+
+    result = agent.run("结合我的阅读历史推荐一本书。")
+
+    assert result.success is True
+    assert provider.requests[0]["tools"] == []
+
+
+def test_agent_starts_without_tools_for_unsupported_star_rating_filter():
+    agent, provider = make_agent(
+        [ProviderTurn(response_id="response-final", output_text="目录没有星级评分数据。")]
+    )
+
+    result = agent.run("找一本评分高于 4 星的算法书。")
+
+    assert result.success is True
+    assert provider.requests[0]["tools"] == []
+
+
+def test_agent_rejects_tools_that_are_not_available_at_current_stage():
+    agent, provider = make_agent(
+        [
+            ProviderTurn(
+                response_id="response-wrong-stage",
+                tool_calls=(call("call-details-first", "get_book_details", {"item_ids": ["I1"]}),),
+            ),
+            ProviderTurn(response_id="response-final", output_text="请重新提供检索条件。"),
+        ]
+    )
+
+    result = agent.run("搜索算法书。")
+
+    assert result.success is True
+    assert result.trace["tool_calls"][0]["error"] == "tool_not_available_in_stage"
+    assert json.loads(provider.requests[1]["input_items"][0]["output"])["error"] == (
+        "tool_not_available_in_stage"
+    )
     assert result.trace["detail_item_ids"] == ["I2"]
     assert provider.requests[1]["previous_response_id"] == "response-search"
     assert provider.requests[1]["input_items"][0]["type"] == "function_call_output"
