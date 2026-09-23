@@ -130,7 +130,12 @@ def test_agent_runs_retrieval_personalization_details_and_grounded_answer():
     assert provider.requests[1]["previous_response_id"] == "response-search"
     assert provider.requests[1]["input_items"][0]["type"] == "function_call_output"
     assert provider.requests[1]["input_items"][0]["call_id"] == "call-search"
-    assert len(provider.requests[0]["tools"]) == 3
+    assert [[tool["name"] for tool in request["tools"]] for request in provider.requests] == [
+        ["search_catalog"],
+        ["rank_candidates_for_user"],
+        ["get_book_details"],
+        [],
+    ]
 
 
 def test_agent_rejects_book_ids_not_verified_by_details():
