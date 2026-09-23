@@ -58,6 +58,29 @@ def test_tool_definitions_are_strict_and_allow_only_three_read_tools(tools):
     assert all(definition["type"] == "function" for definition in definitions)
     assert all(definition["strict"] is True for definition in definitions)
     assert all(definition["parameters"]["additionalProperties"] is False for definition in definitions)
+    category_description = next(
+        definition["parameters"]["properties"]["category"]["description"]
+        for definition in definitions
+        if definition["name"] == "search_catalog"
+    )
+    assert "科技" in category_description
+    assert "主题" in category_description
+
+
+def test_search_treats_string_null_as_an_unset_optional_filter(tools):
+    result = tools.new_session().call(
+        "search_catalog",
+        {
+            "query": "随笔",
+            "category": "null",
+            "keyword": "随笔",
+            "min_price": None,
+            "max_price": None,
+            "limit": 5,
+        },
+    )
+
+    assert [row["item_id"] for row in result["candidates"]] == ["I3"]
 
 
 def test_search_rank_details_flow_preserves_candidates_and_real_metadata(tools):
@@ -195,3 +218,32 @@ def test_rank_result_discloses_when_user_context_is_unavailable(tools):
         "history_item_count": 0,
         "personalization_applied": False,
     }
+
+
+def test_rank_distinguishes_known_user_from_matching_personalization_signals(tools):
+    session = tools.new_session()
+    session.call(
+        "search_catalog",
+        {
+            "query": "随笔",
+            "category": "文学",
+            "keyword": "随笔",
+            "min_price": None,
+            "max_price": None,
+            "limit": 5,
+        },
+    )
+
+    ranked = session.call(
+        "rank_candidates_for_user",
+        {
+            "user_id": "U1",
+            "query": "随笔",
+            "candidate_item_ids": ["I3"],
+            "limit": 5,
+        },
+    )
+
+    assert ranked["user_context"]["known_user"] is True
+    assert ranked["user_context"]["history_item_count"] == 1
+    assert ranked["user_context"]["personalization_applied"] is False

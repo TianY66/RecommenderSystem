@@ -221,23 +221,59 @@ def test_agent_returns_outputs_for_parallel_calls_but_executes_only_first():
     ]
 
 
-def test_agent_rejects_book_ids_not_verified_by_details():
+def test_agent_replaces_unverified_book_ids_with_a_grounded_fallback():
     agent, _ = make_agent(valid_flow_turns("推荐《生活随笔》[I3]。"))
 
     result = agent.run("结合 U1 的阅读历史，推荐一本书。")
 
-    assert result.success is False
-    assert result.error == "answer_contains_unverified_item_id"
-    assert "未核验" in result.answer
+    assert result.success is True
+    assert result.error is None
+    assert result.trace["answer_fallback_used"] is True
+    assert "[I2]" in result.answer
+    assert "[I3]" not in result.answer
 
 
-def test_agent_rejects_a_verified_id_paired_with_a_different_book_title():
+def test_agent_replaces_a_mismatched_title_with_a_grounded_fallback():
     agent, _ = make_agent(valid_flow_turns("推荐《伪造书名》[I2]。它属于科技类，关键词有算法。"))
 
     result = agent.run("结合 U1 的阅读历史，推荐一本书。")
 
-    assert result.success is False
-    assert result.error == "answer_book_title_mismatch"
+    assert result.success is True
+    assert result.error is None
+    assert result.trace["answer_fallback_used"] is True
+    assert "算法实践" in result.answer
+    assert "伪造书名" not in result.answer
+
+
+def test_agent_returns_a_local_no_results_answer_without_an_extra_model_turn():
+    agent, provider = make_agent(
+        [
+            ProviderTurn(
+                response_id="response-empty-search",
+                tool_calls=(
+                    call(
+                        "call-empty-search",
+                        "search_catalog",
+                        {
+                            "query": "量子烹饪学",
+                            "category": "量子烹饪学",
+                            "keyword": None,
+                            "min_price": None,
+                            "max_price": None,
+                            "limit": 5,
+                        },
+                    ),
+                ),
+            )
+        ]
+    )
+
+    result = agent.run("只搜索类别为量子烹饪学的书，找不到就说明没有。")
+
+    assert result.success is True
+    assert "没有找到" in result.answer
+    assert len(provider.requests) == 1
+    assert result.trace["answer_fallback_used"] is True
 
 
 def test_agent_trace_keeps_minimal_verified_metadata_for_citations():

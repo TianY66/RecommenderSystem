@@ -78,6 +78,40 @@ def test_score_case_checks_sequence_constraints_and_grounded_detail_evidence():
     assert score_case(case, invented_price, catalog)["facts_consistent"] is False
 
 
+def test_score_case_accepts_quoted_supported_labels_and_rejects_unknown_labels():
+    catalog = BookCatalog(
+        {
+            "I1": {
+                "item_id": "I1",
+                "name": "算法入门",
+                "item_categories": ("科技",),
+                "item_keywords": ("算法",),
+                "price": 45.0,
+            }
+        }
+    )
+    case = {
+        "case_id": "quoted-facts",
+        "prompt": "推荐算法书",
+        "expected_tools": ["search_catalog", "get_book_details"],
+        "expected_outcome": "recommend",
+        "constraints": {},
+    }
+    supported = result(
+        "推荐《算法入门》[I1]。类别为「科技」，关键词含“算法”，价格为 45 元。",
+        case["expected_tools"],
+        ["I1"],
+    )
+    unsupported = result(
+        "推荐《算法入门》[I1]。关键词含“伪造标签”。",
+        case["expected_tools"],
+        ["I1"],
+    )
+
+    assert score_case(case, supported, catalog)["facts_consistent"] is True
+    assert score_case(case, unsupported, catalog)["facts_consistent"] is False
+
+
 def test_score_case_checks_clarification_empty_results_and_unverified_citations():
     catalog = BookCatalog({"I1": {"item_id": "I1", "name": "算法入门", "price": 30}})
     clarify = {
@@ -155,6 +189,18 @@ def test_unknown_user_case_flags_claims_of_history_personalization():
     misleading = result("根据你的阅读历史，推荐《算法入门》[I1]。关键词是算法。", case["expected_tools"], ["I1"])
     misleading.trace["tool_calls"][1]["user_context"] = {"personalization_applied": False}
     assert score_case(case, misleading, catalog)["personalization_claim_accurate"] is False
+
+    explicitly_unpersonalized = result(
+        "该用户没有可用历史，这不是个性化推荐。推荐《算法入门》[I1]，标签是算法。",
+        case["expected_tools"],
+        ["I1"],
+    )
+    explicitly_unpersonalized.trace["tool_calls"][1]["user_context"] = {
+        "personalization_applied": False
+    }
+    assert score_case(case, explicitly_unpersonalized, catalog)[
+        "personalization_claim_accurate"
+    ] is True
 
 
 class CaseDrivenFakeProvider:
