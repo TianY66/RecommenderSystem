@@ -48,3 +48,15 @@ def test_real_agent_cli_reports_missing_credentials_without_stack_trace(monkeypa
     assert exit_info.value.code == 2
     assert "OPENAI_API_KEY" in output.err
     assert "Traceback" not in output.err
+
+
+def test_real_agent_cli_selects_deepseek_and_reports_missing_key(monkeypatch, capsys):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate-agent", "--provider", "deepseek"])
+
+    output = capsys.readouterr()
+    assert exit_info.value.code == 2
+    assert "DEEPSEEK_API_KEY" in output.err
+    assert "Traceback" not in output.err
