@@ -87,6 +87,7 @@ def test_search_rank_details_flow_preserves_candidates_and_real_metadata(tools):
     assert details["items"][0]["name"] == "算法实践"
     assert details["items"][0]["price"] == 45.0
     assert details["items"][0]["item_categories"] == ["科技"]
+    assert "image" not in details["items"][0]
 
 
 def test_rank_and_details_reject_ids_not_returned_by_search(tools):
@@ -162,3 +163,35 @@ def test_tool_session_requires_an_object_for_arguments(tools):
         session.call("search_catalog", "query: 算法")
     with pytest.raises(ToolValidationError, match="Unknown tool"):
         session.call("run_shell", {})
+
+
+def test_rank_result_discloses_when_user_context_is_unavailable(tools):
+    session = tools.new_session()
+    session.call(
+        "search_catalog",
+        {
+            "query": "算法",
+            "category": None,
+            "keyword": None,
+            "min_price": None,
+            "max_price": None,
+            "limit": 10,
+        },
+    )
+
+    ranked = session.call(
+        "rank_candidates_for_user",
+        {
+            "user_id": "U404",
+            "query": "算法",
+            "candidate_item_ids": ["I1", "I2"],
+            "limit": 5,
+        },
+    )
+
+    assert ranked["user_context"] == {
+        "known_user": False,
+        "profile_available": False,
+        "history_item_count": 0,
+        "personalization_applied": False,
+    }

@@ -111,7 +111,8 @@ class BookTools:
                 "name": "rank_candidates_for_user",
                 "description": (
                     "Rerank IDs returned by the immediately preceding search_catalog call "
-                    "using this user's interaction history and profile. Never add candidates."
+                    "using this user's interaction history and profile. The response states "
+                    "whether user context was available. Never add candidates."
                 ),
                 "parameters": _RANK_SCHEMA,
                 "strict": True,
@@ -198,7 +199,23 @@ class BookToolSession:
             user_id.strip(), query, candidate_ids, limit=limit
         )
         self.detail_allowed_ids = {row["item_id"] for row in ranked}
-        return {"ranked_candidates": ranked, "count": len(ranked)}
+        history_count = len(self.tools.recommender.user_history.get(user_id.strip(), {}))
+        profile_available = user_id.strip() in self.tools.recommender.users
+        profile_categories, profile_keywords = self.tools.recommender._user_preferences(
+            user_id.strip()
+        )
+        return {
+            "ranked_candidates": ranked,
+            "count": len(ranked),
+            "user_context": {
+                "known_user": profile_available or history_count > 0,
+                "profile_available": profile_available,
+                "history_item_count": history_count,
+                "personalization_applied": bool(
+                    history_count or profile_categories or profile_keywords
+                ),
+            },
+        }
 
     def _details(self, arguments: Any) -> dict[str, Any]:
         values = _exact_arguments(arguments, {"item_ids"})
@@ -217,11 +234,22 @@ class BookToolSession:
         if outside_search:
             raise ToolValidationError("item_ids must come from search candidates")
 
-        found = [
-            _jsonable(self.tools.catalog.get_item(item_id))
-            for item_id in normalized_ids
-            if item_id in self.tools.catalog.items
-        ]
+        answer_fields = (
+            "item_id",
+            "name",
+            "author",
+            "item_categories",
+            "item_keywords",
+            "description",
+            "price",
+        )
+        found = []
+        for item_id in normalized_ids:
+            item = self.tools.catalog.get_item(item_id)
+            if item is not None:
+                found.append(
+                    _jsonable({key: item[key] for key in answer_fields if key in item})
+                )
         not_found = [item_id for item_id in normalized_ids if item_id not in self.tools.catalog.items]
         return {"items": found, "not_found": not_found}
 
